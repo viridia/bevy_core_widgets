@@ -17,7 +17,6 @@ pub enum Orientation {
 /// A scrollbar can have any number of child entities, but one entity must be the scrollbar
 /// thumb, which is marked with the [`CoreScrollbarThumb`] component. Other children are ignored.
 #[derive(Component, Debug)]
-#[require(ScrollbarDragState)]
 pub struct CoreScrollbar {
     /// Entity being scrolled.
     pub target: Entity,
@@ -31,6 +30,10 @@ pub struct CoreScrollbar {
 /// of the scrollbar entity.
 #[derive(Component, Debug)]
 pub struct CoreScrollbarThumb;
+
+#[derive(Component, Debug)]
+#[require(ScrollbarDragState)]
+pub struct CoreScrollArea;
 
 impl CoreScrollbar {
     pub fn new(target: Entity, orientation: Orientation, min_thumb_size: f32) -> Self {
@@ -48,7 +51,7 @@ pub struct ScrollbarDragState {
     /// Whether the scrollbar is currently being dragged.
     dragging: bool,
     /// The value of the scrollbar when dragging started.
-    offset: f32,
+    offset: ScrollPosition,
 }
 
 pub(crate) fn scrollbar_on_pointer_down(
@@ -93,31 +96,41 @@ pub(crate) fn scrollbar_on_pointer_down(
 pub(crate) fn scrollbar_on_drag_start(
     mut trigger: Trigger<Pointer<DragStart>>,
     q_thumb: Query<&ChildOf, With<CoreScrollbarThumb>>,
-    mut q_scrollbar: Query<(&CoreScrollbar, &mut ScrollbarDragState)>,
-    q_scroll_area: Query<&ScrollPosition>,
+    mut q_scroll_area: Query<(&ScrollPosition, &mut ScrollbarDragState), With<CoreScrollArea>>,
+    mut q_scrollbar: Query<&CoreScrollbar>,
 ) {
+    //if drag srarted on scroll bars
     if let Ok(ChildOf(thumb_parent)) = q_thumb.get(trigger.target()) {
         trigger.propagate(false);
-        if let Ok((scrollbar, mut drag)) = q_scrollbar.get_mut(*thumb_parent) {
-            if let Ok(scroll_area) = q_scroll_area.get(scrollbar.target) {
+        if let Ok(scrollbar) = q_scrollbar.get_mut(*thumb_parent) {
+            if let Ok((scroll_pos, mut drag)) = q_scroll_area.get_mut(scrollbar.target) {
                 drag.dragging = true;
-                drag.offset = match scrollbar.orientation {
-                    Orientation::Horizontal => scroll_area.offset_x,
-                    Orientation::Vertical => scroll_area.offset_y,
-                };
+                drag.offset = scroll_pos.clone();
             }
         }
     }
+
+    //if drag srarted on scroll area
+    if let Ok((scroll_pos, mut drag)) = q_scroll_area.get_mut(trigger.target()) {
+        trigger.propagate(false);
+        drag.dragging = true;
+        drag.offset = scroll_pos.clone();
+    };
 }
 
 pub(crate) fn scrollbar_on_drag(
     mut trigger: Trigger<Pointer<Drag>>,
-    mut q_scrollbar: Query<(&ComputedNode, &CoreScrollbar, &mut ScrollbarDragState)>,
-    mut q_scroll_pos: Query<(&mut ScrollPosition, &ComputedNode), Without<CoreScrollbar>>,
+    mut q_scroll_area: Query<
+        (&mut ScrollPosition, &ComputedNode, &mut ScrollbarDragState),
+        (Without<CoreScrollbar>, With<CoreScrollArea>),
+    >,
+    mut q_scrollbar: Query<(&ComputedNode, &CoreScrollbar)>,
 ) {
-    if let Ok((node, scrollbar, drag)) = q_scrollbar.get_mut(trigger.target()) {
+    //if drag on scroll bar
+    if let Ok((node, scrollbar)) = q_scrollbar.get_mut(trigger.target()) {
         trigger.propagate(false);
-        let Ok((mut scroll_pos, scroll_content)) = q_scroll_pos.get_mut(scrollbar.target) else {
+        let Ok((mut scroll_pos, scroll_content, drag)) = q_scroll_area.get_mut(scrollbar.target)
+        else {
             return;
         };
 
@@ -132,7 +145,7 @@ pub(crate) fn scrollbar_on_drag(
                         - scrollbar.min_thumb_size)
                         .max(1.0);
                     scroll_pos.offset_x = if range > 0. {
-                        (drag.offset + (distance.x * content_size.x) / scrollbar_width)
+                        (drag.offset.offset_x + (distance.x * content_size.x) / scrollbar_width)
                             .clamp(0., range)
                     } else {
                         0.
@@ -144,12 +157,34 @@ pub(crate) fn scrollbar_on_drag(
                         - scrollbar.min_thumb_size)
                         .max(1.0);
                     scroll_pos.offset_y = if range > 0. {
-                        (drag.offset + (distance.y * content_size.y) / scrollbar_height)
+                        (drag.offset.offset_y + (distance.y * content_size.y) / scrollbar_height)
                             .clamp(0., range)
                     } else {
                         0.
                     }
                 }
+            };
+        }
+    }
+
+    //if drag srared on scroll content
+    if let Ok((mut scroll_pos, scroll_content, drag)) = q_scroll_area.get_mut(trigger.target()) {
+        if drag.dragging {
+            let distance = trigger.event().distance;
+            let visible_size = scroll_content.size() * scroll_content.inverse_scale_factor;
+            let content_size = scroll_content.content_size() * scroll_content.inverse_scale_factor;
+            let x_range = (content_size.x - visible_size.x).max(0.);
+            scroll_pos.offset_x = if x_range > 0. {
+                (drag.offset.offset_x - distance.x).clamp(0., x_range)
+            } else {
+                0.
+            };
+
+            let y_range = (content_size.y - visible_size.y).max(0.);
+            scroll_pos.offset_y = if y_range > 0. {
+                (drag.offset.offset_y - distance.y).clamp(0., y_range)
+            } else {
+                0.
             };
         }
     }
@@ -245,6 +280,7 @@ impl Plugin for CoreScrollbarPlugin {
             .add_observer(scrollbar_on_drag_start)
             .add_observer(scrollbar_on_drag_end)
             .add_observer(scrollbar_on_drag)
+            // .add_observer(scrollarea_on_drag)
             .add_systems(PostUpdate, update_scrollbar_thumb);
     }
 }

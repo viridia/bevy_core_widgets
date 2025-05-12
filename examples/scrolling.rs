@@ -9,7 +9,7 @@
 use bevy::{
     a11y::AccessibilityNode,
     ecs::{
-        component::HookContext, relationship::RelatedSpawner, spawn::SpawnWith,
+        component::HookContext, relationship::RelatedSpawner, spawn::SpawnWith, system::SystemId,
         world::DeferredWorld,
     },
     input_focus::{
@@ -18,9 +18,12 @@ use bevy::{
     },
     prelude::*,
     ui,
+    window::SystemCursorIcon,
+    winit::cursor::CursorIcon,
 };
 use bevy_core_widgets::{
-    hover::Hovering, CoreScrollbar, CoreScrollbarThumb, CoreSlider, CoreWidgetsPlugin, Orientation,
+    hover::Hovering, ButtonClicked, ButtonPressed, CoreButton, CoreScrollArea, CoreScrollbar,
+    CoreScrollbarThumb, CoreSlider, CoreWidgetsPlugin, InteractionDisabled, Orientation,
     ValueChange,
 };
 
@@ -35,7 +38,12 @@ fn main() {
         .add_systems(Startup, setup_view_root)
         .add_systems(
             Update,
-            (update_focus_rect, update_scrollbar_thumb, close_on_esc),
+            (
+                update_focus_rect,
+                update_scrollbar_thumb,
+                close_on_esc,
+                update_button_bg_colors,
+            ),
         )
         .run();
 }
@@ -70,6 +78,18 @@ fn setup_view_root(mut commands: Commands) {
                 // Update slider state from event.
                 slider.set_value(trigger.event().0);
                 info!("New slider state: {:?}", slider.value());
+            }
+        },
+    );
+
+    // Observer for buttons that don't have an on_click handler.
+    commands.add_observer(
+        |mut trigger: Trigger<ButtonClicked>, q_button: Query<&CoreButton>| {
+            // If the button doesn't exist or is not a CoreButton
+            if q_button.get(trigger.target()).is_ok() {
+                trigger.propagate(false);
+                let button_id = trigger.target();
+                info!("Got button click event: {:?}", button_id);
             }
         },
     );
@@ -167,12 +187,15 @@ fn scroll_area_demo() -> impl Bundle {
                     BackgroundColor(colors::U3.into()),
                     ScrollPosition {
                         offset_x: 0.0,
-                        offset_y: 10.0,
+                        offset_y: 8.0,
                     },
+                    CoreScrollArea,
                     Children::spawn((
                         // The actual content of the scrolling area
                         Spawn(text_row("Alpha Wolf")),
                         Spawn(text_row("Beta Blocker")),
+                        Spawn(button("Save", ButtonVariant::Default, None)),
+                        Spawn(button("Create", ButtonVariant::Primary, None)),
                         Spawn(text_row("Delta Sleep")),
                         Spawn(text_row("Gamma Ray")),
                         Spawn(text_row("Epsilon Eridani")),
@@ -181,8 +204,8 @@ fn scroll_area_demo() -> impl Bundle {
                         Spawn(text_row("Nu Metal")),
                         Spawn(text_row("Pi Day")),
                         Spawn(text_row("Chi Pants")),
-                        Spawn(text_row("Psi Powers")),
-                        Spawn(text_row("Omega Fatty Acid")),
+                        // Spawn(text_row("Psi Powers")),
+                        // Spawn(text_row("Omega Fatty Acid")),
                     )),
                 ))
                 .id();
@@ -294,7 +317,79 @@ mod colors {
     pub const U3: Srgba = Srgba::new(0.224, 0.224, 0.243, 1.0);
     pub const U4: Srgba = Srgba::new(0.486, 0.486, 0.529, 1.0);
     pub const U5: Srgba = Srgba::new(1.0, 1.0, 1.0, 1.0);
-    // pub const PRIMARY: Srgba = Srgba::new(0.341, 0.435, 0.525, 1.0);
-    // pub const DESTRUCTIVE: Srgba = Srgba::new(0.525, 0.341, 0.404, 1.0);
+    pub const PRIMARY: Srgba = Srgba::new(0.341, 0.435, 0.525, 1.0);
+    pub const DESTRUCTIVE: Srgba = Srgba::new(0.525, 0.341, 0.404, 1.0);
     pub const FOCUS: Srgba = Srgba::new(0.055, 0.647, 0.914, 0.15);
+}
+
+#[derive(Component, Default)]
+struct DemoButton {
+    variant: ButtonVariant,
+}
+
+fn button(caption: &str, variant: ButtonVariant, on_click: Option<SystemId>) -> impl Bundle {
+    (
+        Node {
+            display: ui::Display::Flex,
+            flex_direction: ui::FlexDirection::Row,
+            justify_content: ui::JustifyContent::Center,
+            align_items: ui::AlignItems::Center,
+            align_content: ui::AlignContent::Center,
+            padding: ui::UiRect::axes(ui::Val::Px(12.0), ui::Val::Px(0.0)),
+            border: ui::UiRect::all(ui::Val::Px(0.0)),
+            min_height: ui::Val::Px(24.0),
+            ..default()
+        },
+        BorderRadius::all(ui::Val::Px(4.0)),
+        Name::new("Button"),
+        Hovering::default(),
+        CursorIcon::System(SystemCursorIcon::Pointer),
+        DemoButton { variant },
+        CoreButton { on_click },
+        AccessibleName(caption.to_string()),
+        TabIndex(0),
+        children![(
+            Text::new(caption),
+            TextFont {
+                font_size: 14.0,
+                ..default()
+            }
+        )],
+    )
+}
+
+// Update the button's background color.
+#[allow(clippy::type_complexity)]
+fn update_button_bg_colors(
+    mut query: Query<
+        (
+            &DemoButton,
+            &mut BackgroundColor,
+            &Hovering,
+            &ButtonPressed,
+            Has<InteractionDisabled>,
+        ),
+        Or<(Added<DemoButton>, Changed<Hovering>, Changed<ButtonPressed>)>,
+    >,
+) {
+    for (button, mut bg_color, Hovering(is_hovering), ButtonPressed(is_pressed), is_disabled) in
+        query.iter_mut()
+    {
+        // Update the background color based on the button's state
+        let base_color = match button.variant {
+            ButtonVariant::Default => colors::U3,
+            ButtonVariant::Primary => colors::PRIMARY,
+            ButtonVariant::Danger => colors::DESTRUCTIVE,
+            ButtonVariant::Selected => colors::U4,
+        };
+
+        let new_color = match (is_disabled, is_pressed, is_hovering) {
+            (true, _, _) => base_color.with_alpha(0.2),
+            (_, true, true) => base_color.lighter(0.07),
+            (_, false, true) => base_color.lighter(0.03),
+            _ => base_color,
+        };
+
+        bg_color.0 = new_color.into();
+    }
 }
